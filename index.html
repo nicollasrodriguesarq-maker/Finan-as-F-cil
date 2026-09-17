@@ -375,9 +375,9 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);fon
       <div class="card">
         <div class="ch"><div class="ch-l"><div class="cdot" style="background:var(--red)"></div><span class="ctitle">Contas fixas mensais</span></div><span class="ctotal" id="tot-fixas" style="color:var(--red)"></span></div>
         <div class="cb">
-          <div class="desk tbl-wrap"><table class="tbl"><thead><tr><th style="width:22%">Descrição</th><th style="width:13%">Categoria</th><th style="width:10%">Vencimento</th><th style="width:13%">Valor (R$)</th><th style="width:7%">Parc.</th><th style="width:7%">Total</th><th style="width:12%">Status</th><th style="width:10%">Progresso</th><th style="width:6%"></th></tr></thead><tbody id="tb-fixas-d"></tbody></table></div>
+          <div class="desk tbl-wrap"><table class="tbl"><thead><tr><th style="width:20%">Descrição</th><th style="width:12%">Categoria</th><th style="width:9%">Vencimento</th><th style="width:12%">Valor (R$)</th><th style="width:6%">Parc.</th><th style="width:6%">Total</th><th style="width:11%">Status</th><th style="width:9%">Progresso</th><th style="width:8%">Repete</th><th style="width:7%"></th></tr></thead><tbody id="tb-fixas-d"></tbody></table></div>
           <div class="mob" id="tb-fixas-m"></div>
-          <div style="margin-top:9px;display:flex;align-items:center;gap:10px;flex-wrap:wrap"><button class="btn-add" onclick="addRow('fixas')">+ Adicionar conta</button><span style="font-size:11px;color:var(--text3)">💡 Parceladas repetem automaticamente</span></div>
+          <div style="margin-top:9px;display:flex;align-items:center;gap:10px;flex-wrap:wrap"><button class="btn-add" onclick="addRow('fixas')">+ Adicionar conta</button><span style="font-size:11px;color:var(--text3)">💡 Contas fixas repetem todo mês automaticamente (desmarque "Repete" pra uma conta avulsa) · parceladas repetem até acabar as parcelas</span></div>
         </div>
       </div>
     </div>
@@ -770,21 +770,64 @@ async function loadAll(){
   C.parc=pr.data||[];C.cg=cgr.data||[];C.inv=ir.data||[];
 }
 
+// Propaga itens do mês anterior pro mês atual de forma idempotente: casa por serie_id
+// (nunca por descrição) e usa upsert com ON CONFLICT DO NOTHING, então pode rodar
+// quantas vezes/concorrentemente for chamada sem nunca duplicar uma linha.
+async function upsertSeries(table, rows, arr){
+  if(!rows.length)return;
+  const {data:ins,error}=await db.from(table).upsert(rows,{onConflict:'serie_id,mes,ano',ignoreDuplicates:true}).select();
+  if(error){console.error('upsertSeries error',table,error);return}
+  (ins||[]).forEach(n=>{if(!arr.find(x=>x.id===n.id))arr.push(n)});
+}
 async function propagateInstallments(){
   if(!FAM)return;
   const fid=FAM.id;const uid=CU.id;const adminId=FAM.admin_id;
   let pm=MES-1,py=ANO;if(pm===0){pm=12;py--;}
   try{
-    const {data:pFx}=await db.from('fixas').select('*').or(`familia_id.eq.${fid},user_id.eq.${adminId}`).eq('mes',pm).eq('ano',py).gt('parcelas_total',1);
-    for(const r of(pFx||[])){const pa=+(r.parcela_atual||1),pt=+(r.parcelas_total||1);if(pa>=pt)continue;if(!C.fixas.find(f=>f.descricao===r.descricao&&+(f.parcelas_total||1)>1)){const {data:nd}=await db.from('fixas').insert({user_id:uid,familia_id:fid,descricao:r.descricao,venc:r.venc,valor:r.valor,pago:false,categoria:r.categoria||'Outros',parcela_atual:pa+1,parcelas_total:pt,mes:MES,ano:ANO}).select().single();if(nd)C.fixas.push(nd);}}
+    // Contas fixas: parceladas continuam até acabar as parcelas; as demais repetem
+    // sozinhas todo mês enquanto "recorrente" (padrão true), a menos que o usuário desligue.
+    const {data:pFx}=await db.from('fixas').select('*').or(`familia_id.eq.${fid},user_id.eq.${adminId}`).eq('mes',pm).eq('ano',py);
+    const fxRows=(pFx||[]).map(r=>{
+      const pa=+(r.parcela_atual||1),pt=+(r.parcelas_total||1);
+      if(pt>1){
+        if(pa>=pt)return null;
+        return{user_id:uid,familia_id:fid,descricao:r.descricao,venc:r.venc,valor:r.valor,pago:false,categoria:r.categoria||'Outros',parcela_atual:pa+1,parcelas_total:pt,recorrente:r.recorrente!==false,serie_id:r.serie_id,mes:MES,ano:ANO};
+      }
+      if(r.recorrente===false)return null;
+      return{user_id:uid,familia_id:fid,descricao:r.descricao,venc:r.venc,valor:r.valor,pago:false,categoria:r.categoria||'Outros',parcela_atual:1,parcelas_total:1,recorrente:true,serie_id:r.serie_id,mes:MES,ano:ANO};
+    }).filter(Boolean);
+    await upsertSeries('fixas',fxRows,C.fixas);
+
     const {data:pD}=await db.from('dividas').select('*').or(`familia_id.eq.${fid},user_id.eq.${adminId}`).eq('mes',pm).eq('ano',py).gt('parcelas_total',1);
-    for(const r of(pD||[])){const pa=+(r.parcela_atual||1),pt=+(r.parcelas_total||1);if(pa>=pt)continue;if(!C.dividas.find(d=>d.descricao===r.descricao&&+(d.parcelas_total||1)>1)){const {data:nd}=await db.from('dividas').insert({user_id:uid,familia_id:fid,descricao:r.descricao,categoria:r.categoria||'Outros',valor_orig:r.valor_orig,juros:r.juros,venc:r.venc,status:'Em aberto',parcela_atual:pa+1,parcelas_total:pt,mes:MES,ano:ANO}).select().single();if(nd)C.dividas.push(nd);}}
+    const dvRows=(pD||[]).map(r=>{
+      const pa=+(r.parcela_atual||1),pt=+(r.parcelas_total||1);
+      if(pa>=pt)return null;
+      return{user_id:uid,familia_id:fid,descricao:r.descricao,categoria:r.categoria||'Outros',valor_orig:r.valor_orig,juros:r.juros,venc:r.venc,status:'Em aberto',parcela_atual:pa+1,parcelas_total:pt,serie_id:r.serie_id,mes:MES,ano:ANO};
+    }).filter(Boolean);
+    await upsertSeries('dividas',dvRows,C.dividas);
+
     const {data:pP}=await db.from('parcelamentos').select('*').or(`familia_id.eq.${fid},user_id.eq.${adminId}`).eq('mes',pm).eq('ano',py);
-    for(const r of(pP||[])){const pa=+(r.parcela_atual||1),pt=+(r.parcelas_total||1);if(pa>=pt||r.status==='Quitado')continue;if(!C.parc.find(p=>p.descricao===r.descricao)){const parcPagas=+(r.parcelas_pagas_mes||1);const novaAtual=Math.min(pa+parcPagas,pt);if(novaAtual>=pt)continue;const {data:nd}=await db.from('parcelamentos').insert({user_id:uid,familia_id:fid,descricao:r.descricao,categoria:r.categoria||'Outros',valor_parcela:r.valor_parcela,parcela_atual:novaAtual,parcelas_total:pt,parcelas_pagas_mes:1,valor_antecipado:0,venc:r.venc,status:'Em dia',mes:MES,ano:ANO}).select().single();if(nd)C.parc.push(nd);}}
+    const pcRows=(pP||[]).map(r=>{
+      const pa=+(r.parcela_atual||1),pt=+(r.parcelas_total||1);
+      if(pa>=pt||r.status==='Quitado')return null;
+      const parcPagas=+(r.parcelas_pagas_mes||1);
+      const novaAtual=Math.min(pa+parcPagas,pt);
+      if(novaAtual>=pt)return null;
+      return{user_id:uid,familia_id:fid,descricao:r.descricao,categoria:r.categoria||'Outros',valor_parcela:r.valor_parcela,parcela_atual:novaAtual,parcelas_total:pt,parcelas_pagas_mes:1,valor_antecipado:0,venc:r.venc,status:'Em dia',serie_id:r.serie_id,mes:MES,ano:ANO};
+    }).filter(Boolean);
+    await upsertSeries('parcelamentos',pcRows,C.parc);
+
     const {data:pCG}=await db.from('cartao_gastos').select('*').or(`familia_id.eq.${fid},user_id.eq.${adminId}`).eq('mes',pm).eq('ano',py).gt('parcelas',1);
-    for(const r of(pCG||[])){const pa=+(r.parcela_atual||1),pt=+(r.parcelas||1);if(pa>=pt)continue;if(!C.cg.find(g=>g.descricao===r.descricao&&g.cartao_id===r.cartao_id&&+(g.parcelas||1)>1)){const {data:nd}=await db.from('cartao_gastos').insert({user_id:uid,familia_id:fid,cartao_id:r.cartao_id,descricao:r.descricao,data_gasto:null,valor:r.valor,parcelas:pt,parcela_atual:pa+1,cat:r.cat,fatura:'Atual',mes:MES,ano:ANO}).select().single();if(nd)C.cg.push(nd);}}
+    const cgRows1=(pCG||[]).map(r=>{
+      const pa=+(r.parcela_atual||1),pt=+(r.parcelas||1);
+      if(pa>=pt)return null;
+      return{user_id:uid,familia_id:fid,cartao_id:r.cartao_id,descricao:r.descricao,data_gasto:null,valor:r.valor,parcelas:pt,parcela_atual:pa+1,cat:r.cat,fatura:'Atual',serie_id:r.serie_id,mes:MES,ano:ANO};
+    }).filter(Boolean);
+    await upsertSeries('cartao_gastos',cgRows1,C.cg);
+
     const {data:proxFat}=await db.from('cartao_gastos').select('*').or(`familia_id.eq.${fid},user_id.eq.${adminId}`).eq('mes',pm).eq('ano',py).eq('fatura','Próxima');
-    for(const r of(proxFat||[])){if(!C.cg.find(g=>g.descricao===r.descricao&&g.cartao_id===r.cartao_id&&g.fatura!=='Próxima')){const {data:nd}=await db.from('cartao_gastos').insert({user_id:uid,familia_id:fid,cartao_id:r.cartao_id,descricao:r.descricao,data_gasto:r.data_gasto,valor:r.valor,parcelas:r.parcelas||1,parcela_atual:r.parcela_atual||1,cat:r.cat,fatura:'Atual',mes:MES,ano:ANO}).select().single();if(nd)C.cg.push(nd);}}
+    const cgRows2=(proxFat||[]).map(r=>({user_id:uid,familia_id:fid,cartao_id:r.cartao_id,descricao:r.descricao,data_gasto:r.data_gasto,valor:r.valor,parcelas:r.parcelas||1,parcela_atual:r.parcela_atual||1,cat:r.cat,fatura:'Atual',serie_id:r.serie_id,mes:MES,ano:ANO}));
+    await upsertSeries('cartao_gastos',cgRows2,C.cg);
   }catch(e){console.error('propagate error',e)}
 }
 
@@ -800,7 +843,17 @@ async function copyFromPrev(){
   const adminId=FAM.admin_id;
   const [fr,cfr,mr,pr]=await Promise.all([db.from('fixas').select('*').or(`familia_id.eq.${fid},user_id.eq.${adminId}`).eq('mes',pm).eq('ano',py),db.from('conforto').select('*').or(`familia_id.eq.${fid},user_id.eq.${adminId}`).eq('mes',pm).eq('ano',py),db.from('members').select('*').or(`familia_id.eq.${fid},user_id.eq.${adminId}`).eq('mes',pm).eq('ano',py),db.from('parcelamentos').select('*').or(`familia_id.eq.${fid},user_id.eq.${adminId}`).eq('mes',pm).eq('ano',py)]);
   let n=0;
-  for(const r of(fr.data||[])){if(!C.fixas.find(f=>f.descricao===r.descricao)){const pa=+(r.parcela_atual||1),pt=+(r.parcelas_total||1);const np=pa<pt?pa+1:null;if(np===null&&pt>1)continue;await db.from('fixas').insert({user_id:uid,familia_id:fid,descricao:r.descricao,venc:r.venc,valor:r.valor,pago:false,categoria:r.categoria||'Outros',parcela_atual:np||1,parcelas_total:pt,mes:MES,ano:ANO});n++;}}
+  // Fixas usa o mesmo motor idempotente por serie_id de propagateInstallments (normalmente já
+  // rodou sozinho ao trocar de mês; este botão fica como reforço manual, sem risco de duplicar).
+  const fxRows=(fr.data||[]).map(r=>{
+    const pa=+(r.parcela_atual||1),pt=+(r.parcelas_total||1);
+    if(pt>1){if(pa>=pt)return null;return{user_id:uid,familia_id:fid,descricao:r.descricao,venc:r.venc,valor:r.valor,pago:false,categoria:r.categoria||'Outros',parcela_atual:pa+1,parcelas_total:pt,recorrente:r.recorrente!==false,serie_id:r.serie_id,mes:MES,ano:ANO};}
+    if(r.recorrente===false)return null;
+    return{user_id:uid,familia_id:fid,descricao:r.descricao,venc:r.venc,valor:r.valor,pago:false,categoria:r.categoria||'Outros',parcela_atual:1,parcelas_total:1,recorrente:true,serie_id:r.serie_id,mes:MES,ano:ANO};
+  }).filter(Boolean);
+  const fxBefore=C.fixas.length;
+  await upsertSeries('fixas',fxRows,C.fixas);
+  n+=C.fixas.length-fxBefore;
   for(const r of(cfr.data||[])){if(!C.conforto.find(f=>f.descricao===r.descricao)){await db.from('conforto').insert({user_id:uid,familia_id:fid,descricao:r.descricao,cat:r.cat||'Outros',venc:r.venc||'',valor:r.valor,pago:false,mes:MES,ano:ANO});n++;}}
   for(const r of(mr.data||[])){if(!C.members.find(f=>f.user_id===r.user_id)){await db.from('members').insert({user_id:r.user_id,familia_id:fid,nome:r.nome,salario:r.salario,extra:r.extra,mes:MES,ano:ANO});n++;}}
   await loadAll();renderCurrentTab();toast(n>0?n+' itens copiados!':'Nada novo para copiar.');
@@ -969,9 +1022,9 @@ function renderFixas(){
   const total=C.fixas.reduce((s,r)=>s+(+r.valor||0),0);
   document.getElementById('tot-fixas').textContent='Total: R$ '+fmt(total);
   const tbD=document.getElementById('tb-fixas-d'),tbM=document.getElementById('tb-fixas-m');
-  if(!C.fixas.length){tbD.innerHTML='<tr><td colspan="9"><div class="empty">Nenhuma conta.</div></td></tr>';tbM.innerHTML='<div class="empty">Nenhuma conta.</div>';return}
-  tbD.innerHTML=C.fixas.map((r,i)=>{const sc=r.pago?'sel-pago':'sel-apagar';const pt=+(r.parcelas_total||1),pa=+(r.parcela_atual||1),prog=pt>1?Math.round(pa/pt*100):0;return`<tr><td><input type="text" value="${esc(r.descricao||'')}" placeholder="Ex: Água" oninput="C.fixas[${i}].descricao=this.value;deb('fd${i}',()=>upd('fixas',${i}))"></td><td><select onchange="C.fixas[${i}].categoria=this.value;upd('fixas',${i})">${selOpts(CAT_FIXAS,r.categoria)}</select></td><td><input type="text" value="${esc(r.venc||'')}" placeholder="Dia 10" oninput="C.fixas[${i}].venc=this.value;deb('fv${i}',()=>upd('fixas',${i}))"></td><td><input type="text" inputmode="decimal" value="${r.valor||''}" placeholder="0,00" onchange="C.fixas[${i}].valor=parseVal(this.value);upd('fixas',${i});renderFixas()"></td><td><input type="number" min="1" value="${pa}" style="text-align:center" onchange="C.fixas[${i}].parcela_atual=+this.value;upd('fixas',${i})"></td><td><input type="number" min="1" value="${pt}" style="text-align:center" onchange="C.fixas[${i}].parcelas_total=+this.value;upd('fixas',${i});renderFixas()"></td><td><select class="sel-status ${sc}" onchange="C.fixas[${i}].pago=this.value==='Paga';this.className='sel-status '+(C.fixas[${i}].pago?'sel-pago':'sel-apagar');upd('fixas',${i})">${selOpts(S_PAGTO,r.pago?'Paga':'A pagar')}</select></td><td>${pt>1?`<div style="font-size:9px;color:var(--text2)">${pa}/${pt} (${prog}%)</div><div class="prog-wrap"><div class="prog-fill" style="width:${prog}%;background:var(--blue)"></div></div>`:'—'}</td><td><button class="btn-del" onclick="del('fixas',${i})">✕</button></td></tr>`}).join('');
-  tbM.innerHTML=C.fixas.map((r,i)=>{const sc=r.pago?'sel-pago':'sel-apagar';const pt=+(r.parcelas_total||1),pa=+(r.parcela_atual||1);return`<div class="item-card"><div class="item-card-actions"><select class="sel-status ${sc}" style="width:80px;font-size:10px" onchange="C.fixas[${i}].pago=this.value==='Paga';this.className='sel-status '+(C.fixas[${i}].pago?'sel-pago':'sel-apagar');upd('fixas',${i})">${selOpts(S_PAGTO,r.pago?'Paga':'A pagar')}</select><button class="btn-del" onclick="del('fixas',${i})">✕</button></div><div class="item-card-row"><div class="item-card-label">Descrição</div><input class="item-card-input" type="text" value="${esc(r.descricao||'')}" placeholder="Ex: Água" oninput="C.fixas[${i}].descricao=this.value;deb('fdm${i}',()=>upd('fixas',${i}))"></div><div class="item-card-row" style="gap:8px"><div style="flex:1"><div class="item-card-label">Categoria</div><select class="item-card-select" onchange="C.fixas[${i}].categoria=this.value;upd('fixas',${i})">${selOpts(CAT_FIXAS,r.categoria)}</select></div><div style="flex:1"><div class="item-card-label">Vencimento</div><input class="item-card-input" type="text" value="${esc(r.venc||'')}" placeholder="Dia 10" oninput="C.fixas[${i}].venc=this.value;deb('fvm${i}',()=>upd('fixas',${i}))"></div></div><div class="item-card-row" style="gap:8px"><div style="flex:1"><div class="item-card-label">Valor R$</div><input class="item-card-input" type="text" inputmode="decimal" value="${r.valor||''}" placeholder="0,00" onchange="C.fixas[${i}].valor=parseVal(this.value);upd('fixas',${i});renderFixas()"></div><div style="flex:1"><div class="item-card-label">Parc / Total</div><div style="display:flex;gap:4px"><input class="item-card-input" type="number" min="1" value="${pa}" style="text-align:center;width:45%" onchange="C.fixas[${i}].parcela_atual=+this.value;upd('fixas',${i})"><span style="align-self:center">/</span><input class="item-card-input" type="number" min="1" value="${pt}" style="text-align:center;width:45%" onchange="C.fixas[${i}].parcelas_total=+this.value;upd('fixas',${i});renderFixas()"></div></div></div></div>`}).join('');
+  if(!C.fixas.length){tbD.innerHTML='<tr><td colspan="10"><div class="empty">Nenhuma conta.</div></td></tr>';tbM.innerHTML='<div class="empty">Nenhuma conta.</div>';return}
+  tbD.innerHTML=C.fixas.map((r,i)=>{const sc=r.pago?'sel-pago':'sel-apagar';const pt=+(r.parcelas_total||1),pa=+(r.parcela_atual||1),prog=pt>1?Math.round(pa/pt*100):0;const rec=r.recorrente!==false;return`<tr><td><input type="text" value="${esc(r.descricao||'')}" placeholder="Ex: Água" oninput="C.fixas[${i}].descricao=this.value;deb('fd${i}',()=>upd('fixas',${i}))"></td><td><select onchange="C.fixas[${i}].categoria=this.value;upd('fixas',${i})">${selOpts(CAT_FIXAS,r.categoria)}</select></td><td><input type="text" value="${esc(r.venc||'')}" placeholder="Dia 10" oninput="C.fixas[${i}].venc=this.value;deb('fv${i}',()=>upd('fixas',${i}))"></td><td><input type="text" inputmode="decimal" value="${r.valor||''}" placeholder="0,00" onchange="C.fixas[${i}].valor=parseVal(this.value);upd('fixas',${i});renderFixas()"></td><td><input type="number" min="1" value="${pa}" style="text-align:center" onchange="C.fixas[${i}].parcela_atual=+this.value;upd('fixas',${i})"></td><td><input type="number" min="1" value="${pt}" style="text-align:center" onchange="C.fixas[${i}].parcelas_total=+this.value;upd('fixas',${i});renderFixas()"></td><td><select class="sel-status ${sc}" onchange="C.fixas[${i}].pago=this.value==='Paga';this.className='sel-status '+(C.fixas[${i}].pago?'sel-pago':'sel-apagar');upd('fixas',${i})">${selOpts(S_PAGTO,r.pago?'Paga':'A pagar')}</select></td><td>${pt>1?`<div style="font-size:9px;color:var(--text2)">${pa}/${pt} (${prog}%)</div><div class="prog-wrap"><div class="prog-fill" style="width:${prog}%;background:var(--blue)"></div></div>`:'—'}</td><td style="text-align:center">${pt>1?`<span style="font-size:9px;color:var(--text3)" title="Parceladas repetem sozinhas até a última parcela">parc.</span>`:`<input type="checkbox" ${rec?'checked':''} title="Repete todo mês automaticamente" onchange="C.fixas[${i}].recorrente=this.checked;upd('fixas',${i})">`}</td><td><button class="btn-del" onclick="del('fixas',${i})">✕</button></td></tr>`}).join('');
+  tbM.innerHTML=C.fixas.map((r,i)=>{const sc=r.pago?'sel-pago':'sel-apagar';const pt=+(r.parcelas_total||1),pa=+(r.parcela_atual||1);const rec=r.recorrente!==false;return`<div class="item-card"><div class="item-card-actions"><select class="sel-status ${sc}" style="width:80px;font-size:10px" onchange="C.fixas[${i}].pago=this.value==='Paga';this.className='sel-status '+(C.fixas[${i}].pago?'sel-pago':'sel-apagar');upd('fixas',${i})">${selOpts(S_PAGTO,r.pago?'Paga':'A pagar')}</select><button class="btn-del" onclick="del('fixas',${i})">✕</button></div><div class="item-card-row"><div class="item-card-label">Descrição</div><input class="item-card-input" type="text" value="${esc(r.descricao||'')}" placeholder="Ex: Água" oninput="C.fixas[${i}].descricao=this.value;deb('fdm${i}',()=>upd('fixas',${i}))"></div><div class="item-card-row" style="gap:8px"><div style="flex:1"><div class="item-card-label">Categoria</div><select class="item-card-select" onchange="C.fixas[${i}].categoria=this.value;upd('fixas',${i})">${selOpts(CAT_FIXAS,r.categoria)}</select></div><div style="flex:1"><div class="item-card-label">Vencimento</div><input class="item-card-input" type="text" value="${esc(r.venc||'')}" placeholder="Dia 10" oninput="C.fixas[${i}].venc=this.value;deb('fvm${i}',()=>upd('fixas',${i}))"></div></div><div class="item-card-row" style="gap:8px"><div style="flex:1"><div class="item-card-label">Valor R$</div><input class="item-card-input" type="text" inputmode="decimal" value="${r.valor||''}" placeholder="0,00" onchange="C.fixas[${i}].valor=parseVal(this.value);upd('fixas',${i});renderFixas()"></div><div style="flex:1"><div class="item-card-label">Parc / Total</div><div style="display:flex;gap:4px"><input class="item-card-input" type="number" min="1" value="${pa}" style="text-align:center;width:45%" onchange="C.fixas[${i}].parcela_atual=+this.value;upd('fixas',${i})"><span style="align-self:center">/</span><input class="item-card-input" type="number" min="1" value="${pt}" style="text-align:center;width:45%" onchange="C.fixas[${i}].parcelas_total=+this.value;upd('fixas',${i});renderFixas()"></div></div></div>${pt>1?'':`<div class="item-card-row" style="gap:6px;align-items:center"><input type="checkbox" ${rec?'checked':''} onchange="C.fixas[${i}].recorrente=this.checked;upd('fixas',${i})"><span style="font-size:11px;color:var(--text2)">Repete todo mês automaticamente</span></div>`}</div>`}).join('');
 }
 
 function renderConforto(){
@@ -1144,8 +1197,8 @@ async function saveCard(){
   const nome=document.getElementById('mc-nome').value.trim();if(!nome){toast('Digite o nome do cartão.');return}
   const row={user_id:CU.id,familia_id:FAM?.id,nome,limite:parseVal(document.getElementById('mc-limite').value),fechamento:+document.getElementById('mc-fech').value||10,venc_dia:+document.getElementById('mc-venc').value||20};
   if(editCardId){await db.from('cartoes').update(row).eq('id',editCardId);const idx=C.cartoes.findIndex(c=>c.id===editCardId);if(idx>=0)C.cartoes[idx]={...C.cartoes[idx],...row};}
-  else{const {data}=await db.from('cartoes').insert(row).select().single();if(data){C.cartoes.push(data);const {data:nd}=await db.from('dividas').insert({user_id:CU.id,familia_id:FAM?.id,descricao:'Fatura '+nome,categoria:'Cartão de Crédito',valor_orig:0,juros:0,venc:'Dia '+row.venc_dia,status:'Em aberto',parcela_atual:1,parcelas_total:1,mes:MES,ano:ANO}).select().single();if(nd)C.dividas.push(nd);}}
-  closeCardModal();renderCartoes();renderDividas();toast('Cartão salvo!');
+  else{const {data}=await db.from('cartoes').insert(row).select().single();if(data)C.cartoes.push(data);}
+  closeCardModal();renderCartoes();toast('Cartão salvo!');
 }
 async function deleteCard(id){if(!confirm('Excluir este cartão e todos os seus gastos?'))return;await db.from('cartao_gastos').delete().eq('cartao_id',id);await db.from('cartoes').delete().eq('id',id);C.cartoes=C.cartoes.filter(c=>c.id!==id);C.cg=C.cg.filter(g=>g.cartao_id!==id);if(activeCardTab===id)activeCardTab=null;renderCartoes();renderDash();toast('Cartão excluído.');}
 function switchCardTab(cid){activeCardTab=cid;document.querySelectorAll('.cc-tab').forEach(t=>t.classList.toggle('on',t.dataset.cid===cid));document.querySelectorAll('.cc-panel').forEach(p=>p.classList.toggle('on',p.dataset.cid===cid));}
@@ -1218,7 +1271,7 @@ function renderInv(){
 // ── GENERIC ──
 async function addRow(section){
   const uid=CU.id,fid=FAM?.id;
-  const map={fixas:{table:'fixas',row:{user_id:uid,familia_id:fid,descricao:'',venc:'',valor:0,pago:false,categoria:'Outros',parcela_atual:1,parcelas_total:1,mes:MES,ano:ANO}},conforto:{table:'conforto',row:{user_id:uid,familia_id:fid,descricao:'',cat:'Outros',venc:'',valor:0,pago:false,mes:MES,ano:ANO}},lazer:{table:'lazer',row:{user_id:uid,familia_id:fid,descricao:'',categoria:'Outros',data_gasto:null,valor:0,quem:'',mes:MES,ano:ANO}},dividas:{table:'dividas',row:{user_id:uid,familia_id:fid,descricao:'',categoria:'Outros',valor_orig:0,juros:0,venc:'',status:'Em aberto',parcela_atual:1,parcelas_total:1,mes:MES,ano:ANO}},inv:{table:'investimentos',row:{user_id:uid,familia_id:fid,descricao:'',tipo:'CDB',banco:'',valor:0,rent:'',mes:MES,ano:ANO}}};
+  const map={fixas:{table:'fixas',row:{user_id:uid,familia_id:fid,descricao:'',venc:'',valor:0,pago:false,categoria:'Outros',parcela_atual:1,parcelas_total:1,recorrente:true,mes:MES,ano:ANO}},conforto:{table:'conforto',row:{user_id:uid,familia_id:fid,descricao:'',cat:'Outros',venc:'',valor:0,pago:false,mes:MES,ano:ANO}},lazer:{table:'lazer',row:{user_id:uid,familia_id:fid,descricao:'',categoria:'Outros',data_gasto:null,valor:0,quem:'',mes:MES,ano:ANO}},dividas:{table:'dividas',row:{user_id:uid,familia_id:fid,descricao:'',categoria:'Outros',valor_orig:0,juros:0,venc:'',status:'Em aberto',parcela_atual:1,parcelas_total:1,mes:MES,ano:ANO}},inv:{table:'investimentos',row:{user_id:uid,familia_id:fid,descricao:'',tipo:'CDB',banco:'',valor:0,rent:'',mes:MES,ano:ANO}}};
   const m=map[section];if(!m)return;
   const {data,error}=await db.from(m.table).insert(m.row).select().single();
   if(!error){if(section==='inv')C.inv.push(data);else C[section].push(data);renderTab({fixas:3,conforto:4,lazer:5,dividas:6,inv:9}[section]);toast('Item adicionado!')}
@@ -1226,7 +1279,7 @@ async function addRow(section){
 async function upd(section,i){
   const tmap={fixas:'fixas',conforto:'conforto',lazer:'lazer',dividas:'dividas',parc:'parcelamentos',cartao:'cartao_gastos',inv:'investimentos'};
   const fmap={
-    fixas:r=>({descricao:r.descricao,venc:r.venc,valor:r.valor,pago:r.pago,categoria:r.categoria,parcela_atual:r.parcela_atual,parcelas_total:r.parcelas_total}),
+    fixas:r=>({descricao:r.descricao,venc:r.venc,valor:r.valor,pago:r.pago,categoria:r.categoria,parcela_atual:r.parcela_atual,parcelas_total:r.parcelas_total,recorrente:r.recorrente}),
     conforto:r=>({descricao:r.descricao,cat:r.cat,venc:r.venc,valor:r.valor,pago:r.pago}),
     lazer:r=>({descricao:r.descricao,categoria:r.categoria,data_gasto:r.data_gasto||null,valor:r.valor,quem:r.quem}),
     dividas:r=>({descricao:r.descricao,categoria:r.categoria,valor_orig:r.valor_orig,juros:r.juros,venc:r.venc,status:r.status,parcela_atual:r.parcela_atual,parcelas_total:r.parcelas_total}),
