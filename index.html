@@ -697,11 +697,12 @@ async function saveMember(){
   const btn=document.getElementById('btn-save-member');btn.disabled=true;btn.textContent='Criando...';
   try{
     // Usa a Edge Function para criar o usuário com privilégios de admin
+    const {data:{session}}=await db.auth.getSession();
     const resp=await fetch(`${SUPA_URL}/functions/v1/create-member`,{
       method:'POST',
       headers:{
         'Content-Type':'application/json',
-        'Authorization':`Bearer ${SUPA_KEY}`,
+        'Authorization':`Bearer ${session?.access_token||''}`,
         'apikey':SUPA_KEY
       },
       body:JSON.stringify({email,password:pass,nome,familia_id:FAM.id,salario:sal,extra:ext})
@@ -801,7 +802,7 @@ async function copyFromPrev(){
   let n=0;
   for(const r of(fr.data||[])){if(!C.fixas.find(f=>f.descricao===r.descricao)){const pa=+(r.parcela_atual||1),pt=+(r.parcelas_total||1);const np=pa<pt?pa+1:null;if(np===null&&pt>1)continue;await db.from('fixas').insert({user_id:uid,familia_id:fid,descricao:r.descricao,venc:r.venc,valor:r.valor,pago:false,categoria:r.categoria||'Outros',parcela_atual:np||1,parcelas_total:pt,mes:MES,ano:ANO});n++;}}
   for(const r of(cfr.data||[])){if(!C.conforto.find(f=>f.descricao===r.descricao)){await db.from('conforto').insert({user_id:uid,familia_id:fid,descricao:r.descricao,cat:r.cat||'Outros',venc:r.venc||'',valor:r.valor,pago:false,mes:MES,ano:ANO});n++;}}
-  for(const r of(mr.data||[])){if(!C.members.find(f=>f.nome===r.nome)){await db.from('members').insert({user_id:uid,familia_id:fid,nome:r.nome,salario:r.salario,extra:r.extra,mes:MES,ano:ANO});n++;}}
+  for(const r of(mr.data||[])){if(!C.members.find(f=>f.user_id===r.user_id)){await db.from('members').insert({user_id:r.user_id,familia_id:fid,nome:r.nome,salario:r.salario,extra:r.extra,mes:MES,ano:ANO});n++;}}
   await loadAll();renderCurrentTab();toast(n>0?n+' itens copiados!':'Nada novo para copiar.');
 }
 
@@ -891,7 +892,7 @@ function renderFamilia(){
   const membros=C.famMembros.length?C.famMembros:[];
   if(!membros.length){el.innerHTML='<div class="empty">Nenhum membro cadastrado.</div>';return}
   el.innerHTML=membros.map(fm=>{
-    const mData=C.members.find(m=>m.nome===fm.nome)||null;
+    const mData=C.members.find(m=>m.user_id===fm.user_id)||C.members.find(m=>!m.user_id&&m.nome===fm.nome)||null;
     const idx=mData?C.members.findIndex(m=>m.id===mData.id):-1;
     const sal=mData?+mData.salario||0:0;
     const ext=mData?+mData.extra||0:0;
@@ -931,8 +932,8 @@ function renderFamilia(){
 async function updateMemberNome(userId, membId, novoNome){
   // Atualiza nome em familia_membros
   await db.from('familia_membros').update({nome:novoNome}).eq('user_id',userId).eq('familia_id',FAM.id);
-  // Atualiza nome em members também
-  const m=C.members.find(m=>m.user_id===userId||m.nome);
+  // Atualiza nome em members também (casado por user_id, nunca por nome)
+  const m=C.members.find(m=>m.user_id===userId);
   if(m){m.nome=novoNome;await db.from('members').update({nome:novoNome}).eq('id',m.id);}
   // Atualiza cache local
   const fm=C.famMembros.find(f=>f.user_id===userId);
@@ -941,15 +942,16 @@ async function updateMemberNome(userId, membId, novoNome){
 }
 
 async function updateMemberSalary(userId,nome,salario,field,valor){
-  const fid=FAM?.id,uid=CU.id;
+  const fid=FAM?.id;
   const sal=field==='extra'?salario:valor;
   const ext=field==='extra'?valor:salario;
-  const existing=C.members.find(m=>m.nome===nome);
+  // Casa por user_id (identidade real); nome só como fallback pra dados legados sem user_id
+  const existing=C.members.find(m=>m.user_id===userId)||C.members.find(m=>!m.user_id&&m.nome===nome);
   if(existing){
     existing.salario=sal;existing.extra=ext;
     await db.from('members').update({salario:sal,extra:ext}).eq('id',existing.id);
   } else {
-    const {data:nd}=await db.from('members').insert({user_id:uid,familia_id:fid,nome,salario:sal,extra:ext,mes:MES,ano:ANO}).select().single();
+    const {data:nd}=await db.from('members').insert({user_id:userId,familia_id:fid,nome,salario:sal,extra:ext,mes:MES,ano:ANO}).select().single();
     if(nd)C.members.push(nd);
   }
   renderFamilia();renderDash();
