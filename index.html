@@ -306,6 +306,9 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);fon
       <button class="nav-tab" onclick="goTab(7,this)">📋 Parcelamentos</button>
       <button class="nav-tab" onclick="goTab(8,this)">💳 Cartões</button>
       <button class="nav-tab" onclick="goTab(9,this)">📈 Investimentos</button>
+      <button class="nav-tab" onclick="goTab(10,this)">🎯 Orçamento</button>
+      <button class="nav-tab" onclick="goTab(11,this)">💰 Contas</button>
+      <button class="nav-tab" onclick="goTab(12,this)">📊 Histórico</button>
     </div>
   </div>
 
@@ -456,10 +459,48 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);fon
       </div>
     </div>
 
+    <!-- ORÇAMENTO -->
+    <div id="tab-10" style="display:none">
+      <div class="card">
+        <div class="ch"><div class="ch-l"><div class="cdot" style="background:var(--purple)"></div><span class="ctitle">Orçamento por categoria</span></div></div>
+        <div class="cb"><p style="font-size:12px;color:var(--text2);margin-bottom:.75rem">Defina um limite mensal por categoria (0 = sem limite). O progresso considera os gastos já lançados em Contas Fixas, Conforto e Lazer no mês selecionado.</p><div id="orc-list"><div class="loading"><div class="spin"></div>Carregando...</div></div></div>
+      </div>
+    </div>
+
+    <!-- CONTAS BANCÁRIAS -->
+    <div id="tab-11" style="display:none">
+      <div class="card" style="margin-bottom:1rem">
+        <div class="ch"><div class="ch-l"><div class="cdot" style="background:var(--teal)"></div><span class="ctitle">Contas bancárias</span></div><button class="btn-add" onclick="openContaModal()">+ Nova conta</button></div>
+        <div class="cb" id="contas-list"><div class="loading"><div class="spin"></div>Carregando...</div></div>
+      </div>
+      <div class="card">
+        <div class="ch"><div class="ch-l"><div class="cdot" style="background:var(--green)"></div><span class="ctitle">Saldo estimado</span></div></div>
+        <div class="cb" id="saldo-box"><div class="loading"><div class="spin"></div>Calculando...</div></div>
+      </div>
+    </div>
+
+    <!-- HISTÓRICO -->
+    <div id="tab-12" style="display:none">
+      <div class="card">
+        <div class="ch"><div class="ch-l"><div class="cdot" style="background:var(--blue)"></div><span class="ctitle">Últimos 6 meses</span></div></div>
+        <div class="cb" id="hist-box"><div class="loading"><div class="spin"></div>Carregando...</div></div>
+      </div>
+    </div>
+
   </div>
 </div>
 
 <!-- MODAIS -->
+<div class="modal-bg" id="modal-conta" style="display:none">
+  <div class="modal">
+    <h3 id="mco-title">Nova conta bancária</h3>
+    <div class="fld"><label>Nome da conta</label><input type="text" id="mco-nome" placeholder="Ex: Conta corrente"></div>
+    <div class="fld"><label>Banco</label><input type="text" id="mco-banco" placeholder="Ex: Nubank"></div>
+    <div class="fld"><label>Saldo inicial R$</label><input type="text" inputmode="decimal" id="mco-saldo" placeholder="0,00"></div>
+    <p style="font-size:11px;color:var(--text2);margin-top:-4px">💡 O saldo atual é estimado a partir daqui somando receitas e subtraindo despesas já pagas em todos os meses.</p>
+    <div class="modal-foot"><button class="btn-cancel" onclick="closeContaModal()">Cancelar</button><button class="btn-p" style="width:auto;padding:8px 18px" onclick="saveConta()">Salvar</button></div>
+  </div>
+</div>
 <div class="modal-bg" id="modal-copy" style="display:none">
   <div class="modal">
     <h3>Copiar do mês anterior</h3>
@@ -529,7 +570,8 @@ const db=createClient(SUPA_URL,SUPA_KEY);
 let CU=null,FAM=null,FAM_ROLE='membro';
 let MES=new Date().getMonth()+1,ANO=new Date().getFullYear();
 let editCardId=null,editParcId=null,curTab=0,activeCardTab=null;
-let C={members:[],fixas:[],conforto:[],lazer:[],dividas:[],parc:[],cartoes:[],cg:[],inv:[],famMembros:[]};
+let C={members:[],fixas:[],conforto:[],lazer:[],dividas:[],parc:[],cartoes:[],cg:[],inv:[],famMembros:[],metas:[],contas:[]};
+let editContaId=null;
 let DT={};
 
 const MESES=['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
@@ -585,6 +627,7 @@ const CAT_CONF=['Carro/Combustível','Saúde/Farmácia','Academia/Esporte','Stre
 const CAT_LAZ=['Restaurante/Delivery','Cinema/Teatro','Viagem','Balada/Bar','Esporte/Lazer','Jogos/Hobbies','Presentes','Outros'];
 const CAT_DIV=['Cartão de Crédito','Financiamento','Empréstimo Pessoal','Cheque Especial','Consignado','Parcelado','Conta em Atraso','Outros'];
 const CAT_CC=['Alimentação','Saúde','Transporte','Lazer','Compras','Assinatura','Viagem','Outros'];
+const ALL_CATS=[...new Set([...CAT_FIXAS,...CAT_CONF,...CAT_LAZ])];
 const TIPOS_INV=['Tesouro Direto','CDB','LCI/LCA','Fundo Renda Fixa','Ações','FII','Cripto','Previdência','Poupança','Outro'];
 const S_PAGTO=['A pagar','Paga'];
 const S_DIV=['Em aberto','Atrasada','Paga'];
@@ -754,7 +797,7 @@ async function loadAll(){
     extra.forEach(([col,val])=>{query=query.eq(col,val)});
     return query;
   };
-  const [cr,mr,fr,cfr,lr,dr,pr,cgr,ir]=await Promise.all([
+  const [cr,mr,fr,cfr,lr,dr,pr,cgr,ir,mtr,ctr]=await Promise.all([
     q('cartoes').order('created_at'),
     q('members',[['mes',MES],['ano',ANO]]).order('created_at'),
     q('fixas',[['mes',MES],['ano',ANO]]).order('venc'),
@@ -764,10 +807,13 @@ async function loadAll(){
     q('parcelamentos',[['mes',MES],['ano',ANO]]).order('created_at'),
     q('cartao_gastos',[['mes',MES],['ano',ANO]]).order('data_gasto'),
     q('investimentos',[['mes',MES],['ano',ANO]]).order('created_at'),
+    db.from('metas_categoria').select('*').eq('familia_id',fid),
+    db.from('contas_bancarias').select('*').eq('familia_id',fid).order('created_at'),
   ]);
   C.cartoes=cr.data||[];C.members=mr.data||[];C.fixas=fr.data||[];
   C.conforto=cfr.data||[];C.lazer=lr.data||[];C.dividas=dr.data||[];
   C.parc=pr.data||[];C.cg=cgr.data||[];C.inv=ir.data||[];
+  C.metas=mtr.data||[];C.contas=ctr.data||[];
 }
 
 // Propaga itens do mês anterior pro mês atual de forma idempotente: casa por serie_id
@@ -833,7 +879,7 @@ async function propagateInstallments(){
 
 function renderCurrentTab(){renderTab(curTab)}
 function goTab(i,el){document.querySelectorAll('[id^=tab-]').forEach(t=>t.style.display='none');document.getElementById('tab-'+i).style.display='block';document.querySelectorAll('.nav-tab').forEach(b=>b.classList.remove('on'));if(el)el.classList.add('on');curTab=i;renderTab(i);}
-function renderTab(i){if(i===0)renderDash();if(i===1)renderGeral();if(i===2)renderFamilia();if(i===3)renderFixas();if(i===4)renderConforto();if(i===5)renderLazer();if(i===6)renderDividas();if(i===7)renderParc();if(i===8)renderCartoes();if(i===9)renderInv();}
+function renderTab(i){if(i===0)renderDash();if(i===1)renderGeral();if(i===2)renderFamilia();if(i===3)renderFixas();if(i===4)renderConforto();if(i===5)renderLazer();if(i===6)renderDividas();if(i===7)renderParc();if(i===8)renderCartoes();if(i===9)renderInv();if(i===10)renderOrcamento();if(i===11)renderContas();if(i===12)renderHistorico();}
 
 function openCopyModal(){document.getElementById('modal-copy').style.display='flex'}
 function closeCopyModal(){document.getElementById('modal-copy').style.display='none'}
@@ -1266,6 +1312,157 @@ function renderInv(){
   if(!C.inv.length){tbD.innerHTML='<tr><td colspan="6"><div class="empty">Nenhum investimento.</div></td></tr>';tbM.innerHTML='<div class="empty">Nenhum investimento.</div>';return}
   tbD.innerHTML=C.inv.map((r,i)=>`<tr><td><input type="text" value="${esc(r.descricao||'')}" placeholder="Ex: Tesouro 2029" oninput="C.inv[${i}].descricao=this.value;deb('id${i}',()=>upd('inv',${i}))"></td><td><select onchange="C.inv[${i}].tipo=this.value;upd('inv',${i});renderInv()">${selOpts(TIPOS_INV,r.tipo)}</select></td><td><input type="text" value="${esc(r.banco||'')}" placeholder="Ex: Nubank" oninput="C.inv[${i}].banco=this.value;deb('ib${i}',()=>upd('inv',${i}))"></td><td><input type="text" inputmode="decimal" value="${r.valor||''}" placeholder="0,00" onchange="C.inv[${i}].valor=parseVal(this.value);upd('inv',${i});renderInv()"></td><td><input type="text" value="${esc(r.rent||'')}" placeholder="Ex: CDI+0.5%" oninput="C.inv[${i}].rent=this.value;deb('ir${i}',()=>upd('inv',${i}))"></td><td><button class="btn-del" onclick="del('inv',${i})">✕</button></td></tr>`).join('');
   tbM.innerHTML=C.inv.map((r,i)=>`<div class="item-card"><div class="item-card-actions"><button class="btn-del" onclick="del('inv',${i})">✕</button></div><div class="item-card-row"><div class="item-card-label">Descrição</div><input class="item-card-input" type="text" value="${esc(r.descricao||'')}" placeholder="Ex: Tesouro 2029" oninput="C.inv[${i}].descricao=this.value;deb('idm${i}',()=>upd('inv',${i}))"></div><div class="item-card-row" style="gap:8px"><div style="flex:1"><div class="item-card-label">Tipo</div><select class="item-card-select" onchange="C.inv[${i}].tipo=this.value;upd('inv',${i});renderInv()">${selOpts(TIPOS_INV,r.tipo)}</select></div><div style="flex:1"><div class="item-card-label">Banco</div><input class="item-card-input" type="text" value="${esc(r.banco||'')}" placeholder="Ex: Nubank" oninput="C.inv[${i}].banco=this.value;deb('ibm${i}',()=>upd('inv',${i}))"></div></div><div class="item-card-row" style="gap:8px"><div style="flex:1"><div class="item-card-label">Valor R$</div><input class="item-card-input" type="text" inputmode="decimal" value="${r.valor||''}" placeholder="0,00" onchange="C.inv[${i}].valor=parseVal(this.value);upd('inv',${i});renderInv()"></div><div style="flex:1"><div class="item-card-label">Rentabilidade</div><input class="item-card-input" type="text" value="${esc(r.rent||'')}" placeholder="CDI+0.5%" oninput="C.inv[${i}].rent=this.value;deb('irm${i}',()=>upd('inv',${i}))"></div></div></div>`).join('');
+}
+
+// ── ORÇAMENTO POR CATEGORIA ──
+function gastoPorCategoria(){
+  const map={};
+  C.fixas.forEach(r=>{if(r.categoria)map[r.categoria]=(map[r.categoria]||0)+(+r.valor||0)});
+  C.conforto.forEach(r=>{if(r.cat)map[r.cat]=(map[r.cat]||0)+(+r.valor||0)});
+  C.lazer.forEach(r=>{if(r.categoria)map[r.categoria]=(map[r.categoria]||0)+(+r.valor||0)});
+  return map;
+}
+function renderOrcamento(){
+  const gastos=gastoPorCategoria();
+  document.getElementById('orc-list').innerHTML=ALL_CATS.map(cat=>{
+    const meta=C.metas.find(m=>m.categoria===cat);
+    const limite=+(meta&&meta.limite||0);
+    const gasto=gastos[cat]||0;
+    const pct=limite>0?Math.min(100,(gasto/limite*100)):0;
+    const cor=pct>=100?'var(--red)':pct>80?'var(--amber)':'var(--green)';
+    const estourou=limite>0&&gasto>limite;
+    return`<div style="padding:10px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+        <span style="font-size:13px;font-weight:600">${esc(cat)}</span>
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="font-size:11px;color:var(--text2)">R$ ${fmt(gasto)} de</span>
+          <input type="text" inputmode="decimal" value="${limite||''}" placeholder="sem limite" style="width:90px;border:1px solid var(--border);border-radius:6px;padding:4px 7px;font-size:12px;font-family:'DM Sans',sans-serif;text-align:right" onchange="updateMetaLimite('${esc(cat)}',parseVal(this.value))">
+        </div>
+      </div>
+      ${limite>0?`<div class="bar-track" style="height:8px"><div class="bar-fill" style="width:${pct}%;background:${cor}"></div></div>${estourou?`<div style="font-size:11px;color:var(--red);margin-top:4px">⚠️ R$ ${fmt(gasto-limite)} acima do limite</div>`:''}`:''}
+    </div>`;
+  }).join('');
+}
+async function updateMetaLimite(categoria,limite){
+  if(!FAM)return;
+  const existing=C.metas.find(m=>m.categoria===categoria);
+  if(existing){
+    existing.limite=limite;
+    await db.from('metas_categoria').update({limite,updated_at:new Date().toISOString()}).eq('id',existing.id);
+  } else {
+    const {data:nd}=await db.from('metas_categoria').insert({familia_id:FAM.id,user_id:CU.id,categoria,limite}).select().single();
+    if(nd)C.metas.push(nd);
+  }
+  renderOrcamento();toast('Limite salvo!');
+}
+
+// ── CONTAS BANCÁRIAS / SALDO ──
+function openContaModal(id){editContaId=id||null;document.getElementById('mco-title').textContent=id?'Editar conta':'Nova conta bancária';if(id){const c=C.contas.find(x=>x.id===id);document.getElementById('mco-nome').value=c.nome||'';document.getElementById('mco-banco').value=c.banco||'';document.getElementById('mco-saldo').value=c.saldo_inicial||'';}else{['mco-nome','mco-banco','mco-saldo'].forEach(id=>document.getElementById(id).value='');}document.getElementById('modal-conta').style.display='flex';}
+function closeContaModal(){document.getElementById('modal-conta').style.display='none';editContaId=null}
+async function saveConta(){
+  const nome=document.getElementById('mco-nome').value.trim();if(!nome){toast('Digite o nome da conta.');return}
+  const row={familia_id:FAM.id,user_id:CU.id,nome,banco:document.getElementById('mco-banco').value.trim(),saldo_inicial:parseVal(document.getElementById('mco-saldo').value)};
+  if(editContaId){await db.from('contas_bancarias').update(row).eq('id',editContaId);const idx=C.contas.findIndex(c=>c.id===editContaId);if(idx>=0)C.contas[idx]={...C.contas[idx],...row};}
+  else{const {data}=await db.from('contas_bancarias').insert(row).select().single();if(data)C.contas.push(data);}
+  closeContaModal();renderContas();toast('Conta salva!');
+}
+async function deleteConta(id){if(!confirm('Excluir esta conta?'))return;await db.from('contas_bancarias').delete().eq('id',id);C.contas=C.contas.filter(c=>c.id!==id);renderContas();toast('Conta removida.');}
+
+async function calcSaldoAcumulado(){
+  const fid=FAM.id;
+  const q=(t,c)=>db.from(t).select(c).eq('familia_id',fid);
+  const [mr,fr,cfr,lr,dr,pr,ir]=await Promise.all([
+    q('members','salario,extra'),
+    q('fixas','valor,pago'),
+    q('conforto','valor,pago'),
+    q('lazer','valor'),
+    q('dividas','valor_orig,juros,status'),
+    q('parcelamentos','valor_parcela,parcelas_pagas_mes,valor_antecipado,status'),
+    q('investimentos','valor'),
+  ]);
+  const receitas=(mr.data||[]).reduce((s,m)=>s+(+m.salario||0)+(+m.extra||0),0);
+  const despFixas=(fr.data||[]).filter(r=>r.pago).reduce((s,r)=>s+(+r.valor||0),0);
+  const despConforto=(cfr.data||[]).filter(r=>r.pago).reduce((s,r)=>s+(+r.valor||0),0);
+  const despLazer=(lr.data||[]).reduce((s,r)=>s+(+r.valor||0),0);
+  const despDividas=(dr.data||[]).filter(r=>r.status==='Paga').reduce((s,r)=>{const v=+r.juros>0?(+r.valor_orig||0)*(1+r.juros/100):(+r.valor_orig||0);return s+v},0);
+  const despParc=(pr.data||[]).filter(p=>p.status!=='Atrasado').reduce((s,p)=>s+(+p.valor_parcela||0)*(+(p.parcelas_pagas_mes||1))+(+p.valor_antecipado||0),0);
+  const despInv=(ir.data||[]).reduce((s,r)=>s+(+r.valor||0),0);
+  const saidas=despFixas+despConforto+despLazer+despDividas+despParc+despInv;
+  const baseInicial=C.contas.reduce((s,c)=>s+(+c.saldo_inicial||0),0);
+  return{baseInicial,receitas,saidas,saldo:baseInicial+receitas-saidas};
+}
+
+function renderContas(){
+  const el=document.getElementById('contas-list');
+  if(!C.contas.length){el.innerHTML='<div class="empty">Nenhuma conta cadastrada.</div>';}
+  else{
+    el.innerHTML=C.contas.map(c=>`<div class="mem-row"><div class="avatar" style="background:var(--teal-l);color:var(--teal-d)">${(c.nome||'?').charAt(0).toUpperCase()}</div><div class="mem-info"><span style="font-size:14px;font-weight:600">${esc(c.nome||'—')}</span><div style="font-size:11px;color:var(--text2);margin-top:2px">${esc(c.banco||'—')} · saldo inicial R$ ${fmt(c.saldo_inicial||0)}</div></div><div style="display:flex;gap:5px"><button class="btn-sm" style="color:var(--blue-d);background:var(--blue-l)" onclick="openContaModal('${c.id}')">✏️</button><button class="btn-del" onclick="deleteConta('${c.id}')">✕</button></div></div>`).join('');
+  }
+  const box=document.getElementById('saldo-box');
+  box.innerHTML='<div class="loading"><div class="spin"></div>Calculando...</div>';
+  calcSaldoAcumulado().then(({baseInicial,receitas,saidas,saldo})=>{
+    box.innerHTML=`
+      <div class="mg" style="margin-bottom:.75rem">
+        <div class="met"><div class="met-label">Saldo inicial</div><div class="met-val" style="font-size:16px">R$ ${fmt(baseInicial)}</div></div>
+        <div class="met"><div class="met-label">Receitas (histórico)</div><div class="met-val" style="font-size:16px;color:var(--green)">R$ ${fmt(receitas)}</div></div>
+        <div class="met"><div class="met-label">Despesas pagas (histórico)</div><div class="met-val" style="font-size:16px;color:var(--red)">R$ ${fmt(saidas)}</div></div>
+        <div class="met"><div class="met-label">Saldo atual estimado</div><div class="met-val" style="font-size:16px;color:${saldo>=0?'var(--green)':'var(--red)'}">R$ ${fmt(saldo)}</div></div>
+      </div>
+      <p style="font-size:11px;color:var(--text3)">Estimativa somando receitas e despesas marcadas como pagas em todos os meses lançados, a partir do saldo inicial das contas acima. Não substitui o extrato real do banco.</p>`;
+  });
+}
+
+// ── HISTÓRICO ──
+function lastNPeriods(n){
+  const arr=[];let m=MES,y=ANO;
+  for(let i=0;i<n;i++){arr.push({m,y});m--;if(m===0){m=12;y--;}}
+  return arr.reverse();
+}
+async function fetchMonthTotals(m,y){
+  const fid=FAM.id;
+  const q=(t,c)=>db.from(t).select(c).eq('familia_id',fid).eq('mes',m).eq('ano',y);
+  const [mr,fr,cfr,lr,dr,pr,cgr,ir]=await Promise.all([
+    q('members','salario,extra'),
+    q('fixas','valor'),
+    q('conforto','valor'),
+    q('lazer','valor'),
+    q('dividas','valor_orig,juros'),
+    q('parcelamentos','valor_parcela,parcelas_pagas_mes,valor_antecipado,status'),
+    q('cartao_gastos','valor,parcelas,fatura'),
+    q('investimentos','valor'),
+  ]);
+  const rec=(mr.data||[]).reduce((s,x)=>s+(+x.salario||0)+(+x.extra||0),0);
+  const fix=(fr.data||[]).reduce((s,x)=>s+(+x.valor||0),0);
+  const conf=(cfr.data||[]).reduce((s,x)=>s+(+x.valor||0),0);
+  const laz=(lr.data||[]).reduce((s,x)=>s+(+x.valor||0),0);
+  const div=(dr.data||[]).reduce((s,x)=>{const v=+x.juros>0?(+x.valor_orig||0)*(1+x.juros/100):(+x.valor_orig||0);return s+v},0);
+  const parc=(pr.data||[]).filter(x=>x.status!=='Quitado').reduce((s,x)=>s+(+x.valor_parcela||0)*(+(x.parcelas_pagas_mes||1))+(+x.valor_antecipado||0),0);
+  const cc=(cgr.data||[]).filter(x=>x.fatura!=='Próxima').reduce((s,x)=>s+(+x.valor||0)/(+x.parcelas||1),0);
+  const inv=(ir.data||[]).reduce((s,x)=>s+(+x.valor||0),0);
+  return{rec,gas:fix+conf+laz+div+parc+cc,inv};
+}
+async function renderHistorico(){
+  const box=document.getElementById('hist-box');
+  box.innerHTML='<div class="loading"><div class="spin"></div>Carregando...</div>';
+  const periodos=lastNPeriods(6);
+  const dados=await Promise.all(periodos.map(p=>(p.m===MES&&p.y===ANO)?Promise.resolve(calcT()):fetchMonthTotals(p.m,p.y)));
+  const linhas=periodos.map((p,i)=>({...p,...dados[i]}));
+  const mx=Math.max(...linhas.map(l=>Math.max(l.rec,l.gas)),1);
+  box.innerHTML=`<div style="display:flex;align-items:flex-end;gap:10px;height:180px;padding:10px 4px 0;overflow-x:auto">
+    ${linhas.map(l=>{
+      const hRec=Math.round(l.rec/mx*140),hGas=Math.round(l.gas/mx*140);
+      const saldo=l.rec-l.gas-(+l.inv||0);
+      return`<div style="flex:1;min-width:52px;display:flex;flex-direction:column;align-items:center;gap:4px">
+        <div style="display:flex;align-items:flex-end;gap:3px;height:140px">
+          <div style="width:14px;height:${hRec}px;background:var(--green);border-radius:3px 3px 0 0" title="Receita R$ ${fmt(l.rec)}"></div>
+          <div style="width:14px;height:${hGas}px;background:var(--red);border-radius:3px 3px 0 0" title="Gastos R$ ${fmt(l.gas)}"></div>
+        </div>
+        <span style="font-size:10px;color:var(--text2);font-weight:600">${MESES[l.m-1].slice(0,3)}/${String(l.y).slice(2)}</span>
+        <span style="font-size:9px;color:${saldo>=0?'var(--green)':'var(--red)'}">R$ ${fmt(saldo)}</span>
+      </div>`;
+    }).join('')}
+  </div>
+  <div class="fleg" style="margin-top:.75rem"><span><span class="fdot" style="background:var(--green)"></span>Receita</span><span><span class="fdot" style="background:var(--red)"></span>Gastos</span></div>`;
 }
 
 // ── GENERIC ──
