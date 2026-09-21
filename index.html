@@ -570,7 +570,7 @@ const db=createClient(SUPA_URL,SUPA_KEY);
 let CU=null,FAM=null,FAM_ROLE='membro';
 let MES=new Date().getMonth()+1,ANO=new Date().getFullYear();
 let editCardId=null,editParcId=null,curTab=0,activeCardTab=null;
-let C={members:[],fixas:[],conforto:[],lazer:[],dividas:[],parc:[],cartoes:[],cg:[],inv:[],famMembros:[],metas:[],contas:[]};
+let C={members:[],fixas:[],conforto:[],lazer:[],dividas:[],parc:[],cartoes:[],cg:[],inv:[],famMembros:[],metas:[],contas:[],faturaPag:[]};
 let editContaId=null;
 let DT={};
 
@@ -797,7 +797,7 @@ async function loadAll(){
     extra.forEach(([col,val])=>{query=query.eq(col,val)});
     return query;
   };
-  const [cr,mr,fr,cfr,lr,dr,pr,cgr,ir,mtr,ctr]=await Promise.all([
+  const [cr,mr,fr,cfr,lr,dr,pr,cgr,ir,mtr,ctr,fpr]=await Promise.all([
     q('cartoes').order('created_at'),
     q('members',[['mes',MES],['ano',ANO]]).order('created_at'),
     q('fixas',[['mes',MES],['ano',ANO]]).order('venc'),
@@ -809,9 +809,11 @@ async function loadAll(){
     q('investimentos',[['mes',MES],['ano',ANO]]).order('created_at'),
     db.from('metas_categoria').select('*').eq('familia_id',fid),
     db.from('contas_bancarias').select('*').eq('familia_id',fid).order('created_at'),
+    db.from('fatura_pagamentos').select('*').eq('familia_id',fid).eq('mes',MES).eq('ano',ANO),
   ]);
   C.cartoes=cr.data||[];C.members=mr.data||[];C.fixas=fr.data||[];
   C.conforto=cfr.data||[];C.lazer=lr.data||[];C.dividas=dr.data||[];
+  C.faturaPag=fpr.data||[];
   C.parc=pr.data||[];C.cg=cgr.data||[];C.inv=ir.data||[];
   C.metas=mtr.data||[];C.contas=ctr.data||[];
 }
@@ -955,7 +957,7 @@ function renderGeral(){
   C.lazer.filter(r=>+r.valor>0).forEach(r=>items.push({src:'lazer',idx:C.lazer.findIndex(x=>x.id===r.id),id:r.id,desc:r.descricao,cat:'Lazer',venc:r.data_gasto||'—',valor:+r.valor||0,pago:true,color:'var(--teal)',extra:r.quem||''}));
   C.dividas.filter(r=>r.status==='Em aberto'||r.status==='Paga').forEach(r=>{const va=+r.juros>0?(+r.valor_orig||0)*(1+r.juros/100):(+r.valor_orig||0);items.push({src:'dividas',idx:C.dividas.findIndex(x=>x.id===r.id),id:r.id,desc:r.descricao,cat:'Dívidas',venc:r.venc||'—',valor:va,pago:r.status==='Paga',color:'var(--coral)',extra:+(r.parcelas_total||1)>1?`Parc. ${r.parcela_atual||1}/${r.parcelas_total}`:''});});
   C.parc.filter(p=>p.status!=='Quitado').forEach(r=>{const pp=+(r.parcelas_pagas_mes||1);const totalMes=(+r.valor_parcela||0)*pp+(+r.valor_antecipado||0);items.push({src:'parc',idx:C.parc.findIndex(x=>x.id===r.id),id:r.id,desc:r.descricao,cat:'Parcelamento',venc:r.venc||'—',valor:totalMes,pago:r.status==='Em dia'&&pp>0,color:'var(--blue)',extra:`Parc. ${r.parcela_atual||1}/${r.parcelas_total}`});});
-  C.cartoes.forEach(c=>{const fat=C.cg.filter(g=>g.cartao_id===c.id&&g.fatura!=='Próxima').reduce((s,g)=>s+(+g.valor||0)/(+g.parcelas||1),0);if(fat>0)items.push({src:'cartao',idx:-1,id:c.id,desc:'Fatura '+esc(c.nome||'Cartão'),cat:'Cartão',venc:'Dia '+(c.venc_dia||'—'),valor:fat,pago:false,color:'var(--purple)',extra:''});});
+  C.cartoes.forEach(c=>{const fat=C.cg.filter(g=>g.cartao_id===c.id&&g.fatura!=='Próxima').reduce((s,g)=>s+(+g.valor||0)/(+g.parcelas||1),0);if(fat>0)items.push({src:'cartao',idx:-1,id:c.id,desc:'Fatura '+esc(c.nome||'Cartão'),cat:'Cartão',venc:'Dia '+(c.venc_dia||'—'),valor:fat,pago:isFaturaPaga(c.id),color:'var(--purple)',extra:''});});
   const totPago=items.filter(x=>x.pago).reduce((s,x)=>s+x.valor,0);
   const totPend=items.filter(x=>!x.pago).reduce((s,x)=>s+x.valor,0);
   document.getElementById('geral-pago').textContent='R$ '+fmt(totPago);
@@ -970,7 +972,7 @@ function renderGeral(){
   Object.entries(grupos).forEach(([g,its])=>{
     if(!its.length)return;
     html+=`<div class="geral-sh"><span style="width:8px;height:8px;border-radius:50%;background:${its[0].color};display:inline-block"></span>${g} <span style="font-weight:400;color:var(--text3)">(${its.length})</span></div>`;
-    its.forEach(x=>{const bc=x.pago?'geral-pago':'geral-pendente',bt=x.pago?'Pago':'Pendente';html+=`<div class="geral-row"><div class="geral-cat-dot" style="background:${x.color}"></div><div class="geral-desc" title="${esc(x.desc)}">${esc(x.desc)||'—'}${x.extra?` <span style="font-size:10px;color:var(--text2)">${esc(x.extra)}</span>`:''}</div><div class="geral-cat">${x.cat}</div><div class="geral-venc" style="font-size:10px;color:var(--text2)">${esc(x.venc)}</div><div class="geral-valor" style="color:${x.color}">R$ ${fmt(x.valor)}</div><div class="geral-status">${x.src==='lazer'?`<span class="geral-badge geral-pago">Pago</span>`:x.src==='cartao'?`<span class="geral-badge geral-pendente">Pendente</span>`:`<button onclick="toggleGeral('${x.src}',${x.idx},'${x.id}')" style="cursor:pointer;border:none;background:none;padding:0"><span class="geral-badge ${bc}">${bt}</span></button>`}</div></div>`;});
+    its.forEach(x=>{const bc=x.pago?'geral-pago':'geral-pendente',bt=x.pago?'Pago':'Pendente';html+=`<div class="geral-row"><div class="geral-cat-dot" style="background:${x.color}"></div><div class="geral-desc" title="${esc(x.desc)}">${esc(x.desc)||'—'}${x.extra?` <span style="font-size:10px;color:var(--text2)">${esc(x.extra)}</span>`:''}</div><div class="geral-cat">${x.cat}</div><div class="geral-venc" style="font-size:10px;color:var(--text2)">${esc(x.venc)}</div><div class="geral-valor" style="color:${x.color}">R$ ${fmt(x.valor)}</div><div class="geral-status">${x.src==='lazer'?`<span class="geral-badge geral-pago">Pago</span>`:`<button onclick="toggleGeral('${x.src}',${x.idx},'${x.id}')" style="cursor:pointer;border:none;background:none;padding:0"><span class="geral-badge ${bc}">${bt}</span></button>`}</div></div>`;});
   });
   el.innerHTML=html;
 }
@@ -979,6 +981,7 @@ async function toggleGeral(src,idx,id){
   else if(src==='conforto'){C.conforto[idx].pago=!C.conforto[idx].pago;await db.from('conforto').update({pago:C.conforto[idx].pago}).eq('id',id);}
   else if(src==='dividas'){C.dividas[idx].status=C.dividas[idx].status==='Paga'?'Em aberto':'Paga';await db.from('dividas').update({status:C.dividas[idx].status}).eq('id',id);}
   else if(src==='parc'){C.parc[idx].status=C.parc[idx].status==='Em dia'?'Quitado':'Em dia';await db.from('parcelamentos').update({status:C.parc[idx].status}).eq('id',id);}
+  else if(src==='cartao'){await toggleFaturaPaga(id,!isFaturaPaga(id));return}
   renderGeral();toast('Status atualizado!');
 }
 
@@ -1249,6 +1252,19 @@ async function saveCard(){
 async function deleteCard(id){if(!confirm('Excluir este cartão e todos os seus gastos?'))return;await db.from('cartao_gastos').delete().eq('cartao_id',id);await db.from('cartoes').delete().eq('id',id);C.cartoes=C.cartoes.filter(c=>c.id!==id);C.cg=C.cg.filter(g=>g.cartao_id!==id);if(activeCardTab===id)activeCardTab=null;renderCartoes();renderDash();toast('Cartão excluído.');}
 function switchCardTab(cid){activeCardTab=cid;document.querySelectorAll('.cc-tab').forEach(t=>t.classList.toggle('on',t.dataset.cid===cid));document.querySelectorAll('.cc-panel').forEach(p=>p.classList.toggle('on',p.dataset.cid===cid));}
 
+function isFaturaPaga(cartaoId){return!!C.faturaPag.find(f=>f.cartao_id===cartaoId&&f.pago);}
+async function toggleFaturaPaga(cartaoId,pago){
+  if(!FAM)return;
+  const existing=C.faturaPag.find(f=>f.cartao_id===cartaoId);
+  if(existing){
+    existing.pago=pago;
+    await db.from('fatura_pagamentos').update({pago,paid_at:pago?new Date().toISOString():null}).eq('id',existing.id);
+  } else {
+    const {data:nd}=await db.from('fatura_pagamentos').insert({familia_id:FAM.id,cartao_id:cartaoId,mes:MES,ano:ANO,pago,paid_at:pago?new Date().toISOString():null}).select().single();
+    if(nd)C.faturaPag.push(nd);
+  }
+  renderCartoes();renderGeral();renderDash();toast(pago?'Fatura marcada como paga!':'Fatura marcada como pendente.');
+}
 function renderCartoes(){
   if(!C.cartoes.length){document.getElementById('cartoes-resumo').innerHTML='<div class="empty">Nenhum cartão cadastrado.</div>';document.getElementById('cartoes-gastos-card').style.display='none';return}
   document.getElementById('cartoes-gastos-card').style.display='block';
@@ -1257,6 +1273,7 @@ function renderCartoes(){
     const fatA=C.cg.filter(g=>g.cartao_id===c.id&&g.fatura!=='Próxima').reduce((s,g)=>s+(+g.valor||0)/(+g.parcelas||1),0);
     const fatP=C.cg.filter(g=>g.cartao_id===c.id&&g.fatura==='Próxima').reduce((s,g)=>s+(+g.valor||0)/(+g.parcelas||1),0);
     const disp=Math.max(0,(+c.limite||0)-fatA);const mel=c.fechamento>1?c.fechamento-1:28;
+    const paga=isFaturaPaga(c.id);
     const GR=['linear-gradient(135deg,#185FA5,#534AB7)','linear-gradient(135deg,#993C1D,#BA7517)','linear-gradient(135deg,#085041,#185FA5)','linear-gradient(135deg,#26215C,#993C1D)','linear-gradient(135deg,#BA7517,#1D9E75)'];
     return`<div><div class="cc-vis" style="background:${GR[ci%GR.length]}"><div class="cc-n">${esc(c.nome||'Cartão')}</div><div class="cc-lim">Limite R$ ${fmt(c.limite||0)}</div><div class="cc-meta"><span>Fecha dia <strong>${c.fechamento||'—'}</strong></span><span>Vence dia <strong>${c.venc_dia||'—'}</strong></span><span>Melhor: até dia <strong>${mel}</strong></span></div></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:7px">
@@ -1264,6 +1281,7 @@ function renderCartoes(){
       <div class="met" style="${fatP>0?'border-color:var(--amber)':''}"><div class="met-label" style="${fatP>0?'color:var(--amber-d)':''}">📅 ${proxMes()}</div><div class="met-val" style="font-size:13px;color:${fatP>0?'var(--amber-d)':'var(--text3)'}">R$ ${fmt(fatP)}</div></div>
       <div class="met" style="grid-column:1/-1"><div class="met-label">Disponível</div><div class="met-val" style="font-size:13px;color:var(--green)">R$ ${fmt(disp)}</div></div>
     </div>
+    <label style="display:flex;align-items:center;gap:6px;margin-bottom:7px;cursor:pointer"><input type="checkbox" ${paga?'checked':''} onchange="toggleFaturaPaga('${c.id}',this.checked)"><span style="font-size:11px;font-weight:600;color:${paga?'var(--green-d)':'var(--text2)'}">${paga?'✓ Fatura atual paga':'Marcar fatura atual como paga'}</span></label>
     <div style="display:flex;gap:5px"><button class="btn-sm" style="color:var(--blue-d);background:var(--blue-l)" onclick="openCardModal('${c.id}')">✏️ Editar</button><button class="btn-sm" style="color:var(--red-d);background:var(--red-l)" onclick="deleteCard('${c.id}')">🗑</button><button class="btn-sm" style="color:var(--purple-d);background:var(--purple-l)" onclick="switchCardTab('${c.id}');document.getElementById('cartoes-gastos-card').scrollIntoView({behavior:'smooth'})">Ver gastos →</button></div></div>`
   }).join('')+'</div>';
 
@@ -1288,10 +1306,14 @@ function renderCartoes(){
     const fatBox=fatP>0?`<div class="fat-box"><div style="display:flex;align-items:center;gap:10px"><div class="fat-box-icon">📅</div><div><div style="font-size:11px;color:var(--amber-d);font-weight:600;text-transform:uppercase;letter-spacing:.3px">Próxima fatura — ${proxMes()}</div><div style="font-size:18px;font-weight:700;color:var(--amber-d)">R$ ${fmt(fatP)}</div><div style="font-size:10px;color:var(--amber)">Compras a partir do dia ${c.fechamento||'—'}</div></div></div><div style="text-align:right"><div style="font-size:11px;color:var(--amber-d);font-weight:500">${gastos.filter(g=>g.fatura==='Próxima').length} compra${gastos.filter(g=>g.fatura==='Próxima').length!==1?'s':''}</div></div></div>`:'';
     const deskRows=sortedG.length?sortedG.map(g=>{const gi=C.cg.findIndex(x=>x.id===g.id);const pt=+(g.parcelas||1);const isP=g.fatura==='Próxima';return`<tr class="${isP?'tbl-row-prox':''}"><td><input type="text" value="${esc(g.descricao||'')}" placeholder="Descrição" oninput="C.cg[${gi}].descricao=this.value;deb('cgd${gi}',()=>upd('cartao',${gi}))"></td><td><input type="text" placeholder="DD/MM/AAAA" value="${g.data_gasto?g.data_gasto.split('-').reverse().join('/'):''}" onblur="const pv=parseDataInput(this.value);if(pv){const nf=detectFatura(pv,${c.fechamento||10});C.cg[${gi}].data_gasto=pv;C.cg[${gi}].fatura=nf;upd('cartao',${gi});renderCartoes();}"></td><td><input type="text" inputmode="decimal" value="${g.valor||''}" placeholder="0,00" onchange="C.cg[${gi}].valor=parseVal(this.value);upd('cartao',${gi});renderCartoes()"></td><td><input type="number" min="1" value="${g.parcela_atual||1}" style="text-align:center" onchange="C.cg[${gi}].parcela_atual=+this.value;upd('cartao',${gi})"></td><td><input type="number" min="1" value="${pt}" style="text-align:center" onchange="C.cg[${gi}].parcelas=+this.value;upd('cartao',${gi});renderCartoes()"></td><td><select onchange="C.cg[${gi}].cat=this.value;upd('cartao',${gi})">${selOpts(CAT_CC,g.cat)}</select></td><td style="text-align:center">${isP?`<span class="f-prox">📅 ${proxMes()}</span>`:`<span class="f-atual">✓ Atual</span>`}</td><td style="font-size:11px;font-weight:600">R$ ${fmt((+g.valor||0)/(pt||1))}</td><td><button class="btn-del" onclick="del('cartao',${gi})">✕</button></td></tr>`}).join(''):`<tr><td colspan="9"><div class="empty">Nenhum gasto.</div></td></tr>`;
     const mobCards=sortedG.length?sortedG.map(g=>{const gi=C.cg.findIndex(x=>x.id===g.id);const pt=+(g.parcelas||1);const isP=g.fatura==='Próxima';return`<div class="item-card" style="${isP?'border-left:3px solid var(--amber)':'border-left:3px solid var(--green)'}"><div class="item-card-actions">${isP?`<span class="f-prox">📅 ${proxMes()}</span>`:`<span class="f-atual">✓</span>`}<button class="btn-del" onclick="del('cartao',${gi})">✕</button></div><div class="item-card-row"><div class="item-card-label">Descrição</div><input class="item-card-input" type="text" value="${esc(g.descricao||'')}" placeholder="Descrição" style="padding-right:80px" oninput="C.cg[${gi}].descricao=this.value;deb('cgdm${gi}',()=>upd('cartao',${gi}))"></div><div class="item-card-row" style="gap:8px"><div style="flex:1"><div class="item-card-label">Data</div><input class="item-card-input" type="text" placeholder="DD/MM/AAAA" value="${g.data_gasto?g.data_gasto.split('-').reverse().join('/'):''}" onblur="const pv=parseDataInput(this.value);if(pv){const nf=detectFatura(pv,${c.fechamento||10});C.cg[${gi}].data_gasto=pv;C.cg[${gi}].fatura=nf;upd('cartao',${gi});renderCartoes();}"></div><div style="flex:1"><div class="item-card-label">Valor R$</div><input class="item-card-input" type="text" inputmode="decimal" value="${g.valor||''}" placeholder="0,00" onchange="C.cg[${gi}].valor=parseVal(this.value);upd('cartao',${gi});renderCartoes()"></div></div><div class="item-card-row" style="gap:8px"><div style="flex:1"><div class="item-card-label">Categoria</div><select class="item-card-select" onchange="C.cg[${gi}].cat=this.value;upd('cartao',${gi})">${selOpts(CAT_CC,g.cat)}</select></div><div style="flex:1"><div class="item-card-label">Parc/Total</div><div style="display:flex;gap:4px"><input class="item-card-input" type="number" min="1" value="${g.parcela_atual||1}" style="text-align:center;width:45%" onchange="C.cg[${gi}].parcela_atual=+this.value;upd('cartao',${gi})"><span style="align-self:center">/</span><input class="item-card-input" type="number" min="1" value="${pt}" style="text-align:center;width:45%" onchange="C.cg[${gi}].parcelas=+this.value;upd('cartao',${gi});renderCartoes()"></div></div></div><div style="font-size:11px;color:var(--text2);margin-top:4px">R$/mês: <strong>R$ ${fmt((+g.valor||0)/(pt||1))}</strong>${isP?` · <strong style="color:var(--amber-d)">${proxMes()}</strong>`:''}</div></div>`}).join(''):`<div class="empty">Nenhum gasto.</div>`;
+    const pagaP=isFaturaPaga(c.id);
     return`<div class="cc-panel ${c.id===activeCardTab?'on':''}" data-cid="${c.id}" style="padding:.875rem 1rem">
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:.875rem">
         <div style="font-size:12px;color:var(--text2)">Fecha dia <strong>${c.fechamento||'—'}</strong> · Compras até dia <strong>${mel}</strong> = fatura atual · Dia <strong>${c.fechamento||'—'}</strong> em diante = ${proxMes()}</div>
-        <div style="font-size:13px;font-weight:600;color:var(--coral)">Fatura atual: R$ ${fmt(fatA)}</div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <div style="font-size:13px;font-weight:600;color:var(--coral)">Fatura atual: R$ ${fmt(fatA)}</div>
+          <label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" ${pagaP?'checked':''} onchange="toggleFaturaPaga('${c.id}',this.checked)"><span class="${pagaP?'f-atual':'f-prox'}">${pagaP?'✓ Paga':'A pagar'}</span></label>
+        </div>
       </div>
       ${fatBox}
       <div class="desk tbl-wrap"><table class="tbl"><thead><tr><th style="width:19%">Descrição</th><th style="width:12%">Data</th><th style="width:12%">Valor (R$)</th><th style="width:8%">Parc.</th><th style="width:7%">Total</th><th style="width:13%">Categoria</th><th style="width:13%">Fatura</th><th style="width:9%">R$/mês</th><th style="width:7%"></th></tr></thead><tbody>${deskRows}</tbody></table></div>
@@ -1371,7 +1393,7 @@ async function deleteConta(id){if(!confirm('Excluir esta conta?'))return;await d
 async function calcSaldoAcumulado(){
   const fid=FAM.id;
   const q=(t,c)=>db.from(t).select(c).eq('familia_id',fid);
-  const [mr,fr,cfr,lr,dr,pr,ir]=await Promise.all([
+  const [mr,fr,cfr,lr,dr,pr,ir,cgr,fpr]=await Promise.all([
     q('members','salario,extra'),
     q('fixas','valor,pago'),
     q('conforto','valor,pago'),
@@ -1379,6 +1401,8 @@ async function calcSaldoAcumulado(){
     q('dividas','valor_orig,juros,status'),
     q('parcelamentos','valor_parcela,parcelas_pagas_mes,valor_antecipado,status'),
     q('investimentos','valor'),
+    q('cartao_gastos','cartao_id,mes,ano,valor,parcelas,fatura'),
+    q('fatura_pagamentos','cartao_id,mes,ano,pago'),
   ]);
   const receitas=(mr.data||[]).reduce((s,m)=>s+(+m.salario||0)+(+m.extra||0),0);
   const despFixas=(fr.data||[]).filter(r=>r.pago).reduce((s,r)=>s+(+r.valor||0),0);
@@ -1387,7 +1411,9 @@ async function calcSaldoAcumulado(){
   const despDividas=(dr.data||[]).filter(r=>r.status==='Paga').reduce((s,r)=>{const v=+r.juros>0?(+r.valor_orig||0)*(1+r.juros/100):(+r.valor_orig||0);return s+v},0);
   const despParc=(pr.data||[]).filter(p=>p.status!=='Atrasado').reduce((s,p)=>s+(+p.valor_parcela||0)*(+(p.parcelas_pagas_mes||1))+(+p.valor_antecipado||0),0);
   const despInv=(ir.data||[]).reduce((s,r)=>s+(+r.valor||0),0);
-  const saidas=despFixas+despConforto+despLazer+despDividas+despParc+despInv;
+  const faturasPagas=new Set((fpr.data||[]).filter(f=>f.pago).map(f=>f.cartao_id+'|'+f.mes+'|'+f.ano));
+  const despCartao=(cgr.data||[]).filter(g=>g.fatura!=='Próxima'&&faturasPagas.has(g.cartao_id+'|'+g.mes+'|'+g.ano)).reduce((s,g)=>s+(+g.valor||0)/(+g.parcelas||1),0);
+  const saidas=despFixas+despConforto+despLazer+despDividas+despParc+despInv+despCartao;
   const baseInicial=C.contas.reduce((s,c)=>s+(+c.saldo_inicial||0),0);
   return{baseInicial,receitas,saidas,saldo:baseInicial+receitas-saidas};
 }
